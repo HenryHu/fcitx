@@ -30,7 +30,7 @@ set(FCITX_UTILS_HEADERS
 fcitx_translate_add_sources(${FCITX_UTILS_SOURCES} ${FCITX_UTILS_HEADERS})
 
 if(LIBKVM_FOUND)
-  include_directories(LIBKVM_INCLUDE_DIR)
+  include_directories(${LIBKVM_INCLUDE_DIR})
 endif()
 
 add_library(fcitx-utils SHARED ${FCITX_UTILS_SOURCES})
