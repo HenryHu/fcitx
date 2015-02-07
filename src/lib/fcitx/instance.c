@@ -290,6 +290,9 @@ void* RunInstance(void* arg)
     FcitxUILoad(instance);
 
     instance->iIMIndex = FcitxInstanceGetIMIndexByName(instance, instance->profile->imName);
+    if (instance->iIMIndex < 0) {
+        instance->iIMIndex = 0;
+    }
 
     FcitxInstanceSwitchIMByIndex(instance, instance->iIMIndex);
 
@@ -666,6 +669,9 @@ boolean FcitxInstanceSetCurrentIC(FcitxInstance* instance, FcitxInputContext* ic
     FcitxContextState prevstate = FcitxInstanceGetCurrentState(instance);
     boolean changed = (instance->CurrentIC != ic);
 
+    if (instance->CurrentIC) {
+        FcitxInstanceSetLastIC(instance, instance->CurrentIC);
+    }
     instance->CurrentIC = ic;
 
     FcitxContextState nextstate = FcitxInstanceGetCurrentState(instance);
@@ -679,6 +685,20 @@ boolean FcitxInstanceSetCurrentIC(FcitxInstance* instance, FcitxInputContext* ic
 
     return changed;
 }
+
+void FcitxInstanceSetLastIC(FcitxInstance* instance, FcitxInputContext* ic)
+{
+    instance->lastIC = ic;
+
+    free(instance->delayedIM);
+    instance->delayedIM = NULL;
+}
+
+void FcitxInstanceSetDelayedIM(FcitxInstance* instance, const char* delayedIM)
+{
+    fcitx_utils_string_swap(&instance->delayedIM, delayedIM);
+}
+
 
 void FcitxInstanceInitBuiltContext(FcitxInstance* instance)
 {
@@ -805,6 +825,8 @@ static void FcitxInstanceInitNoPreeditApps(FcitxInstance* instance) {
         utarray_push_back(no_preedit_app_list, &re);
         re = NULL;
     }
+
+    fcitx_utils_free_string_list(app_pat_list);
 
     instance->no_preedit_app_list = no_preedit_app_list;
 }
