@@ -23,8 +23,6 @@
 
 #include "config.h"
 
-#include <iconv.h>
-
 #include <fcitx/ime.h>
 #include <fcitx-utils/utarray.h>
 #include <fcitx-config/fcitx-config.h>
@@ -57,18 +55,18 @@ typedef struct _FcitxKeyboard {
     char dictLang[6];
     FcitxKeyboardConfig config;
     FcitxXkbRules* rules;
-    iconv_t iconv;
     char *initialLayout;
     char *initialVariant;
     char buffer[2][FCITX_KEYBOARD_MAX_BUFFER + UTF8_MAX_LENGTH + 1];
     int cursorPos;
-    uint composeBuffer[FCITX_MAX_COMPOSE_LEN + 1];
-    int n_compose;
     char *tempBuffer;
     int lastLength;
     int dataSlot;
     int enUSRegistered;
     boolean cursor_moved;
+    struct xkb_context* xkbContext;
+    struct xkb_compose_table* xkbComposeTable;
+    struct xkb_compose_state* xkbComposeState;
 } FcitxKeyboard;
 
 typedef struct _FcitxKeyboardLayout {

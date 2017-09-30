@@ -20,6 +20,7 @@
 
 #include <X11/Xutil.h>
 #include <X11/extensions/Xrender.h>
+#include <X11/extensions/shape.h>
 #include <X11/Xatom.h>
 #include <unistd.h>
 #include <cairo.h>
@@ -124,6 +125,14 @@ void* ClassicUICreate(FcitxInstance* instance)
     if (classicui->dpi <= 0)
         classicui->dpi = 96;
 
+    int dummy1 = 0, dummy2 = 0, major, minor;
+    if (XShapeQueryExtension(classicui->dpy, &dummy1, &dummy2) == True &&
+        XShapeQueryVersion(classicui->dpy, &major, &minor)) {
+        if (major > 1 || (major == 1 && minor >= 1)) {
+            classicui->hasXShape = true;
+        }
+    }
+
     if (LoadSkinConfig(&classicui->skin, &classicui->skinType)) {
         free(classicui);
         return NULL;
@@ -168,7 +177,7 @@ void* ClassicUICreate(FcitxInstance* instance)
 void ClassicUIDelayedInitTray(void* arg) {
     FcitxClassicUI* classicui = (FcitxClassicUI*) arg;
     // FcitxLog(INFO, "yeah we delayed!");
-    if (!classicui->bUseTrayIcon)
+    if (!classicui->bUseTrayIcon || classicui->isSuspend)
         return;
     /*
      * if this return false, something wrong happened and callback
@@ -187,7 +196,7 @@ void ClassicUIDelayedShowTray(void* arg)
 {
     FcitxClassicUI* classicui = (FcitxClassicUI*) arg;
     classicui->trayTimeout = 0;
-    if (!classicui->bUseTrayIcon)
+    if (!classicui->bUseTrayIcon || classicui->isSuspend)
         return;
 
     if (!classicui->trayWindow->bTrayMapped) {

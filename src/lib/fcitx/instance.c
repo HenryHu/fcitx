@@ -365,6 +365,7 @@ void* RunInstance(void* arg)
         setjmp(FcitxRecover);
 
         if (instance->destroy || instance->restart) {
+            FcitxInstanceEnd(instance);
             FcitxInstanceRealEnd(instance);
             break;
         }
@@ -416,7 +417,9 @@ void* RunInstance(void* arg)
     return NULL;
 
 error_exit:
-    sem_post(&instance->startUpSem);
+    if (instance->sem) {
+        sem_post(&instance->startUpSem);
+    }
     FcitxInstanceEnd(instance);
     return NULL;
 }

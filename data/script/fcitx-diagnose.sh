@@ -56,10 +56,12 @@ _find_file() {
     eval "${2}"'=()'
     while IFS= read -r -d '' "${1}"; do
         array_push "${2}" "${!1}"
-    done < <(find "${@:3}" -print0)
+    done < <(find "${@:3}" -print0 2> /dev/null)
 }
 
 find_file() {
+    # Avoid variable name conflict (Not that anyone is using the internal
+    # variable name though...)
     if [[ ${1} = __find_file_line ]]; then
         _find_file __find_file_line2 "$@"
     else
@@ -185,6 +187,7 @@ get_locale() {
 }
 
 if type dbus-send &> /dev/null; then
+    dbus_exe=dbus-send
     dbus_get_name_owner() {
         local address
         address=$(dbus-send --print-reply=literal --dest=org.freedesktop.DBus \
@@ -200,9 +203,10 @@ if type dbus-send &> /dev/null; then
         echo -n "${pid##* }"
     }
 elif qdbus_exe=$(which qdbus 2> /dev/null) || \
-    qdbus_exe=$(which qdbus-qt4 2> /dev/null); then
+        qdbus_exe=$(which qdbus-qt4 2> /dev/null) || \
+        qdbus_exe=$(which qdbus-qt5 2> /dev/null); then
+    dbus_exe=${qdbus_exe}
     dbus_get_name_owner() {
-        local address
         "${qdbus_exe}" org.freedesktop.DBus /org/freedesktop/DBus \
             org.freedesktop.DBus.GetNameOwner "$1" 2> /dev/null
     }
@@ -211,6 +215,7 @@ elif qdbus_exe=$(which qdbus 2> /dev/null) || \
             org.freedesktop.DBus.GetConnectionUnixProcessID "$1" 2> /dev/null
     }
 else
+    dbus_exe=
     dbus_get_name_owner() {
         return 1
     }
@@ -771,6 +776,8 @@ check_system() {
         write_eval "$(_ 'Desktop environment is ${1}.')" \
             "$(code_inline "${DE}")"
     fi
+    write_order_list "$(_ 'Bash Version:')"
+    write_quote_str "BASH_VERSION='${BASH_VERSION}'"
 }
 
 check_env() {
@@ -922,6 +929,31 @@ check_fcitx() {
         fi
     else
         write_error "$(print_not_found "fcitx-remote")"
+    fi
+    write_order_list "$(_ "DBus interface:")"
+    if [[ -n ${dbus_exe} ]]; then
+        write_eval  "$(_ 'Using ${1} to check dbus.')" \
+                    "$(code_inline "${dbus_exe}")"
+        owner_name=$(dbus_get_name_owner org.fcitx.Fcitx)
+        owner_pid=$(dbus_get_pid org.fcitx.Fcitx)
+        if [[ -n ${owner_name} ]]; then
+            write_eval  "$(_ 'Owner of DBus name ${1} is ${2}.')" \
+                        "$(code_inline 'org.fcitx.Fcitx')" \
+                        "$(code_inline "${owner_name}")"
+        else
+            write_error_eval "$(_ 'Cannot find DBus name ${1} owner.')" \
+                             "$(code_inline 'org.fcitx.Fcitx')"
+        fi
+        if [[ -n ${owner_pid} ]]; then
+            write_eval  "$(_ 'PID of DBus name ${1} owner is ${2}.')" \
+                        "$(code_inline 'org.fcitx.Fcitx')" \
+                        "$(code_inline "${owner_pid}")"
+        else
+            write_error_eval "$(_ 'Cannot find pid of DBus name ${1} owner.')" \
+                             "$(code_inline 'org.fcitx.Fcitx')"
+        fi
+    else
+        write_error "$(_ "Unable to find a program to check dbus.")"
     fi
 }
 
@@ -1137,6 +1169,7 @@ check_qt() {
     qt4_module_found=''
     qt5_module_found=''
     write_order_list "$(_ 'Qt IM module files:')"
+    echo
     for file in "${qt_modules[@]}"; do
         basename=$(basename "${file}")
         __need_blank_line=0

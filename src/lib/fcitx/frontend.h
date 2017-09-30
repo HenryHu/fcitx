@@ -77,7 +77,9 @@ extern "C" {
         CAPACITY_UPPERCASE_WORDS = (1 << 19),
         CAPACITY_UPPERCASE_SENTENCES = (1 << 20),
         CAPACITY_ALPHA = (1 << 21),
-        CAPACITY_NAME = (1 << 22)
+        CAPACITY_NAME = (1 << 22),
+        CAPACITY_GET_IM_INFO_ON_FOCUS = (1 << 23),
+        CAPACITY_RELATIVE_CURSOR_RECT = (1 << 24),
     } FcitxCapacityFlags;
 
     /**

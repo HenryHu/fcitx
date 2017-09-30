@@ -1,10 +1,14 @@
-cmake_minimum_required(VERSION 2.8.6)
+cmake_minimum_required(VERSION 3.1)
 
 project(fcitx)
 
-set(version 4.2.8.5)
+set(version 4.2.9.3)
 
-set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake" ${CMAKE_MODULE_PATH})
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED TRUE)
+
+find_package(ECM 0.0.11 REQUIRED NO_MODULE)
+set(CMAKE_MODULE_PATH "${ECM_MODULE_PATH}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake" ${CMAKE_MODULE_PATH})
 set(CMAKE_AUTOMOC_RELAXED_MODE TRUE)
 
 set_property(GLOBAL PROPERTY "__FCITX_INTERNAL_BUILD" On)
@@ -37,9 +41,8 @@ option(FORCE_ENCHANT
   "Enable enchant even if the library is not found at compile time" Off)
 option(FORCE_PRESAGE
   "Enable presage even if the library is not found at compile time" Off)
-option(ENABLE_ICU "Enable icu for qt/keyboard compose" On)
 option(ENABLE_BACKTRACE "Enable backtrace support" On)
-option(ENABLE_XDGAUTOSTART "Enable xdg autostart desktop file installion" On)
+option(ENABLE_XDGAUTOSTART "Enable xdg autostart desktop file installation" On)
 option(ENABLE_GETTEXT "Enable gettext support." On)
 
 if(NOT NO_SNOOPER_APPS)
@@ -69,6 +72,7 @@ find_package(Libiconv REQUIRED)
 find_package(Pthread REQUIRED)
 find_package(Libexecinfo)
 find_package(GettextPo)
+find_package(XKBCommon 0.5.0 REQUIRED COMPONENTS XKBCommon)
 
 if(NOT ENABLE_GETTEXT OR NOT GETTEXTPO_FOUND)
   fcitx_disable_gettext()
@@ -101,9 +105,6 @@ if(ENABLE_PRESAGE)
     set(ENABLE_PRESAGE Off)
   endif()
 endif()
-if(ENABLE_ICU)
-  find_package(ICU REQUIRED)
-endif()
 
 if(ENABLE_QT)
   find_package(Qt4 4.5 COMPONENTS QtCore QtGui QtDBus REQUIRED)
@@ -116,25 +117,13 @@ if (NOT X11_Xkb_FOUND)
     message(FATAL_ERROR "Xkb is needed")
 endif (NOT X11_Xkb_FOUND)
 
-find_program(some_x_program NAMES iceauth xrdb xterm)
-if (NOT some_x_program)
-    _pkgconfig_invoke("x11" PC_X11 PREFIX "" "--variable=prefix")
-    if (PC_X11_PREFIX)
-        set(some_x_program "${PC_X11_PREFIX}/bin/xrdb")
-    else (PC_X11_PREFIX)
-        set(some_x_program /usr/bin/xrdb)
-        message("Warning: Could not determine X binary directory. Assuming /usr/bin.")
-    endif (PC_X11_PREFIX)
-endif (NOT some_x_program)
-get_filename_component(proto_xbindir "${some_x_program}" PATH)
-get_filename_component(XBINDIR "${proto_xbindir}" ABSOLUTE)
-get_filename_component(xrootdir "${XBINDIR}" PATH)
-set(XLIBDIR "${xrootdir}/lib/X11")
-endif(ENABLE_X11)
+find_package(XKeyboardConfig REQUIRED)
+
+endif()
 
 if (ENABLE_TEST)
-    ENABLE_TESTING()
-endif (ENABLE_TEST)
+    enable_testing()
+endif ()
 
 set(_ENABLE_CAIRO 0)
 set(_ENABLE_PANGO 0)

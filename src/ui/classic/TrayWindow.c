@@ -48,7 +48,7 @@ void TrayWindowInit(TrayWindow *trayWindow)
     Display *dpy = classicui->dpy;
     int iScreen = classicui->iScreen;
     char   strWindowName[] = "Fcitx Tray Window";
-    if (!classicui->bUseTrayIcon || classicui->isSuspend)
+    if (!classicui->bUseTrayIcon || classicui->isSuspend || classicui->notificationItemAvailable)
         return;
 
     if (trayWindow->window == None && trayWindow->dockWindow != None) {
@@ -61,12 +61,12 @@ void TrayWindowInit(TrayWindow *trayWindow)
             wsa.colormap = colormap;
             wsa.background_pixel = 0;
             wsa.border_pixel = 0;
-            trayWindow->window = XCreateWindow(dpy, p, -1, -1, 1, 1,
+            trayWindow->window = XCreateWindow(dpy, p, -1, -1, 22, 22,
                                             0, vi->depth, InputOutput, vi->visual,
                                             CWBackPixmap | CWBackPixel | CWBorderPixel | CWColormap, &wsa);
         } else {
             trayWindow->window = XCreateSimpleWindow(dpy, DefaultRootWindow(dpy),
-                                -1, -1, 1, 1, 0,
+                                -1, -1, 22, 22, 0,
                                 BlackPixel(dpy, DefaultScreen(dpy)),
                                 WhitePixel(dpy, DefaultScreen(dpy)));
             XSetWindowBackgroundPixmap(dpy, trayWindow->window, ParentRelative);
@@ -74,6 +74,7 @@ void TrayWindowInit(TrayWindow *trayWindow)
         if (trayWindow->window == (Window) NULL)
             return;
 
+        trayWindow->size = 22;
         XSizeHints size_hints;
         size_hints.flags = PWinGravity | PBaseSize;
         size_hints.base_width = trayWindow->size;
@@ -161,7 +162,7 @@ void TrayWindowDraw(TrayWindow* trayWindow)
     png_surface = image->image;
 
     c = cairo_create(trayWindow->cs);
-    cairo_set_source_rgba(c, 0, 0, 0, 0);
+    cairo_set_source_rgba(c, 1, 1, 1, 0);
     cairo_set_operator(c, CAIRO_OPERATOR_SOURCE);
     cairo_paint(c);
 
@@ -226,8 +227,6 @@ boolean TrayEventHandler(void *arg, XEvent* event)
         if (event->xclient.message_type == trayWindow->atoms[ATOM_MANAGER]
             && event->xclient.data.l[1] == trayWindow->atoms[ATOM_SELECTION]
             && trayWindow->dockWindow == None) {
-            if (classicui->notificationItemAvailable)
-                return true;
             trayWindow->dockWindow = event->xclient.data.l[2];
             TrayWindowRelease(trayWindow);
             TrayWindowInit(trayWindow);
@@ -245,6 +244,7 @@ boolean TrayEventHandler(void *arg, XEvent* event)
             int size = event->xconfigure.height;
             if (size != trayWindow->size) {
                 trayWindow->size = size;
+                XResizeWindow(dpy, trayWindow->window, size, size);
                 XSizeHints size_hints;
                 size_hints.flags = PWinGravity | PBaseSize;
                 size_hints.base_width = trayWindow->size;
@@ -283,6 +283,14 @@ boolean TrayEventHandler(void *arg, XEvent* event)
             if (trayWindow->dockWindow != None) {
                 TrayWindowInit(trayWindow);
             }
+            return true;
+        }
+        break;
+    case PropertyNotify:
+        if (event->xproperty.atom == trayWindow->atoms[ATOM_VISUAL] &&
+            event->xproperty.window == trayWindow->dockWindow) {
+            TrayWindowRelease(trayWindow);
+            TrayWindowInit(trayWindow);
             return true;
         }
         break;

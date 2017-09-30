@@ -31,12 +31,18 @@
 #include <string.h>
 #include <gtk/gtk.h>
 #include <gdk/gdkkeysyms.h>
+#include <xkbcommon/xkbcommon-compose.h>
+
+#ifdef GDK_WINDOWING_WAYLAND
+#include <gdk/gdkwayland.h>
+#endif
 
 #include "fcitx/fcitx.h"
 #include "fcitx-utils/log.h"
 #include "fcitx/frontend.h"
 
 #include "fcitximcontext.h"
+#include "fcitx-gclient/fcitxconnection.h"
 #include "fcitx-gclient/fcitxclient.h"
 
 #if !GTK_CHECK_VERSION (2, 91, 0)
@@ -78,6 +84,7 @@ struct _FcitxIMContext {
     gboolean use_preedit;
     gboolean support_surrounding_text;
     gboolean is_inpreedit;
+    gboolean is_wayland;
     gchar* preedit_string;
     gchar* surrounding_text;
     int cursor_pos;
@@ -86,6 +93,7 @@ struct _FcitxIMContext {
     PangoAttrList* attrlist;
     gint last_cursor_pos;
     gint last_anchor_pos;
+    struct xkb_compose_state* xkbComposeState;
 };
 
 struct _FcitxIMContextClass {
@@ -203,6 +211,9 @@ static GtkIMContext *_focus_im_context = NULL;
 static const gchar *_no_snooper_apps = NO_SNOOPER_APPS;
 static gboolean _use_key_snooper = _ENABLE_SNOOPER;
 static guint    _key_snooper_id = 0;
+static FcitxConnection* _connection = NULL;
+static struct xkb_context* xkbContext = NULL;
+static struct xkb_compose_table* xkbComposeTable = NULL;
 
 /* Copied from gtk+2.0-2.20.1/modules/input/imcedilla.c to fix crosbug.com/11421.
 * Overwrite the original Gtk+'s compose table in gtk+-2.x.y/gtk/gtkimcontextsimple.c. */
@@ -387,6 +398,11 @@ fcitx_im_context_init(FcitxIMContext *context)
     context->attrlist = NULL;
     context->last_updated_capacity = CAPACITY_SURROUNDING_TEXT;
 
+#ifdef GDK_WINDOWING_WAYLAND
+    if (GDK_IS_WAYLAND_DISPLAY (gdk_display_get_default ())) {
+        context->is_wayland = TRUE;
+    }
+#endif
     context->slave = gtk_im_context_simple_new();
     gtk_im_context_simple_add_table(GTK_IM_CONTEXT_SIMPLE(context->slave),
                                     cedilla_compose_seqs,
@@ -425,7 +441,31 @@ fcitx_im_context_init(FcitxIMContext *context)
 
     context->time = GDK_CURRENT_TIME;
 
-    context->client = fcitx_client_new();
+    static gsize has_info = 0;
+    if (g_once_init_enter(&has_info)) {
+        _connection = fcitx_connection_new();
+        g_object_ref_sink(_connection);
+
+        xkbContext = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+
+        if (xkbContext) {
+            xkb_context_set_log_level(xkbContext, XKB_LOG_LEVEL_CRITICAL);
+        }
+
+        const char* locale = getenv("LC_ALL");
+        if (!locale)
+            locale = getenv("LC_CTYPE");
+        if (!locale)
+            locale = getenv("LANG");
+        if (!locale)
+            locale = "C";
+
+        xkbComposeTable = xkbContext ? xkb_compose_table_new_from_locale(xkbContext, locale, XKB_COMPOSE_COMPILE_NO_FLAGS) : NULL;
+
+        g_once_init_leave(&has_info, 1);
+    }
+
+    context->client = fcitx_client_new_with_connection(_connection);
     g_signal_connect(context->client, "connected", G_CALLBACK(_fcitx_im_context_connect_cb), context);
     g_signal_connect(context->client, "enable-im", G_CALLBACK(_fcitx_im_context_enable_im_cb), context);
     g_signal_connect(context->client, "close-im", G_CALLBACK(_fcitx_im_context_close_im_cb), context);
@@ -433,6 +473,8 @@ fcitx_im_context_init(FcitxIMContext *context)
     g_signal_connect(context->client, "commit-string", G_CALLBACK(_fcitx_im_context_commit_string_cb), context);
     g_signal_connect(context->client, "delete-surrounding-text", G_CALLBACK(_fcitx_im_context_delete_surrounding_text_cb), context);
     g_signal_connect(context->client, "update-formatted-preedit", G_CALLBACK(_fcitx_im_context_update_formatted_preedit_cb), context);
+
+    context->xkbComposeState = xkbComposeTable ? xkb_compose_state_new(xkbComposeTable, XKB_COMPOSE_STATE_NO_FLAGS) : NULL;
 }
 
 static void
@@ -447,6 +489,11 @@ fcitx_im_context_finalize(GObject *obj)
 #define g_signal_handlers_disconnect_by_data(instance, data) \
     g_signal_handlers_disconnect_matched ((instance), G_SIGNAL_MATCH_DATA, 0, 0, NULL, NULL, (data))
 #endif
+
+    if (context->xkbComposeState) {
+        xkb_compose_state_unref(context->xkbComposeState);
+        context->xkbComposeState = NULL;
+    }
 
     if (context->client) {
         g_signal_handlers_disconnect_by_data(context->client, context);
@@ -505,6 +552,38 @@ fcitx_im_context_set_client_window(GtkIMContext          *context,
     set_ic_client_window(fcitxcontext, client_window);
 }
 
+static gboolean
+fcitx_im_context_filter_keypress_fallback(FcitxIMContext *context, GdkEventKey *event)
+{
+    if (!context->xkbComposeState || event->type == GDK_KEY_RELEASE) {
+        return gtk_im_context_filter_keypress(context->slave, event);;
+    }
+
+    struct xkb_compose_state* xkbComposeState = context->xkbComposeState;
+
+    enum xkb_compose_feed_result result = xkb_compose_state_feed(xkbComposeState, event->keyval);
+    if (result == XKB_COMPOSE_FEED_IGNORED) {
+        return gtk_im_context_filter_keypress(context->slave, event);
+    }
+
+    enum xkb_compose_status status = xkb_compose_state_get_status(xkbComposeState);
+    if (status == XKB_COMPOSE_NOTHING) {
+        return gtk_im_context_filter_keypress(context->slave, event);
+    } else if (status == XKB_COMPOSE_COMPOSED) {
+        char buffer[] = {'\0', '\0', '\0', '\0', '\0', '\0', '\0'};
+        int length = xkb_compose_state_get_utf8(xkbComposeState, buffer, sizeof(buffer));
+        xkb_compose_state_reset(xkbComposeState);
+        if (length != 0) {
+            g_signal_emit(context, _signal_commit_id, 0, buffer);
+        }
+
+    } else if (status == XKB_COMPOSE_CANCELLED) {
+        xkb_compose_state_reset(xkbComposeState);
+    }
+
+    return TRUE;
+}
+
 ///
 static gboolean
 fcitx_im_context_filter_keypress(GtkIMContext *context,
@@ -532,7 +611,7 @@ fcitx_im_context_filter_keypress(GtkIMContext *context,
         return TRUE;
 
     if (G_UNLIKELY(event->state & FcitxKeyState_IgnoredMask))
-        return gtk_im_context_filter_keypress(fcitxcontext->slave, event);
+        return fcitx_im_context_filter_keypress_fallback(fcitxcontext, event);
 
     if (fcitx_client_is_valid(fcitxcontext->client) && fcitxcontext->has_focus) {
         _request_surrounding_text (&fcitxcontext);
@@ -550,7 +629,7 @@ fcitx_im_context_filter_keypress(GtkIMContext *context,
                                                     event->time);
             if (ret <= 0) {
                 event->state |= FcitxKeyState_IgnoredMask;
-                return gtk_im_context_filter_keypress(fcitxcontext->slave, event);
+                return fcitx_im_context_filter_keypress_fallback(fcitxcontext, event);
             } else {
                 event->state |= FcitxKeyState_HandledMask;
                 return TRUE;
@@ -571,7 +650,7 @@ fcitx_im_context_filter_keypress(GtkIMContext *context,
             return TRUE;
         }
     } else {
-        return gtk_im_context_filter_keypress(fcitxcontext->slave, event);
+        return fcitx_im_context_filter_keypress_fallback(fcitxcontext, event);
     }
     return FALSE;
 }
@@ -743,11 +822,17 @@ fcitx_im_context_focus_in(GtkIMContext *context)
 
     fcitxcontext->has_focus = true;
 
+    /*
+     * Do not call gtk_im_context_focus_out() here.
+     * This might workaround some chrome issue
+     */
+#if 0
     if (_focus_im_context != NULL) {
         g_assert (_focus_im_context != context);
         gtk_im_context_focus_out (_focus_im_context);
         g_assert (_focus_im_context == NULL);
     }
+#endif
 
     if (fcitx_client_is_valid(fcitxcontext->client)) {
         fcitx_client_focus_in(fcitxcontext->client);
@@ -783,7 +868,9 @@ fcitx_im_context_focus_out(GtkIMContext *context)
         return;
     }
 
+#if 0
     g_assert (context == _focus_im_context);
+#endif
     g_object_remove_weak_pointer ((GObject *) context,
                                   (gpointer *) &_focus_im_context);
     _focus_im_context = NULL;
@@ -842,30 +929,56 @@ _set_cursor_location_internal(FcitxIMContext *fcitxcontext)
     }
 
     area = fcitxcontext->area;
-    if (area.x == -1 && area.y == -1 && area.width == 0 && area.height == 0) {
-#if GTK_CHECK_VERSION (2, 91, 0)
-        area.x = 0;
-        area.y += gdk_window_get_height(fcitxcontext->client_window);
-#else
-        gint w, h;
-        gdk_drawable_get_size(fcitxcontext->client_window, &w, &h);
-        area.y += h;
-        area.x = 0;
-#endif
+
+#ifdef GDK_WINDOWING_WAYLAND
+    if (GDK_IS_WAYLAND_DISPLAY (gdk_display_get_default ())) {
+        gdouble px, py;
+        GdkWindow *parent;
+        GdkWindow *window = fcitxcontext->client_window;
+
+        while ((parent = gdk_window_get_effective_parent (window)) != NULL) {
+            gdk_window_coords_to_parent (window, area.x, area.y, &px, &py);
+            area.x = px;
+            area.y = py;
+            window = parent;
+        }
     }
+    else
+#endif
+    {
+        if (area.x == -1 && area.y == -1 && area.width == 0 && area.height == 0) {
+#if GTK_CHECK_VERSION (2, 91, 0)
+            area.x = 0;
+            area.y += gdk_window_get_height(fcitxcontext->client_window);
+#else
+            gint w, h;
+            gdk_drawable_get_size(fcitxcontext->client_window, &w, &h);
+            area.y += h;
+            area.x = 0;
+#endif
+        }
 
 #if GTK_CHECK_VERSION (2, 18, 0)
-    gdk_window_get_root_coords(fcitxcontext->client_window,
-                               area.x, area.y,
-                               &area.x, &area.y);
+        gdk_window_get_root_coords(fcitxcontext->client_window,
+                                area.x, area.y,
+                                &area.x, &area.y);
 #else
-    {
-        int rootx, rooty;
-        gdk_window_get_origin(fcitxcontext->client_window, &rootx, &rooty);
-        area.x = rootx + area.x;
-        area.y = rooty + area.y;
-    }
+        {
+            int rootx, rooty;
+            gdk_window_get_origin(fcitxcontext->client_window, &rootx, &rooty);
+            area.x += rootx;
+            area.y += rooty;
+        }
 #endif
+    }
+    int scale = 1;
+#if GTK_CHECK_VERSION (3, 10, 0)
+    scale = gdk_window_get_scale_factor(fcitxcontext->client_window);
+#endif
+    area.x *= scale;
+    area.y *= scale;
+    area.width *= scale;
+    area.height *= scale;
 
     fcitx_client_set_cusor_rect(fcitxcontext->client, area.x, area.y, area.width, area.height);
     return FALSE;
@@ -1012,6 +1125,9 @@ _fcitx_im_context_set_capacity(FcitxIMContext* fcitxcontext, gboolean force)
         if (fcitxcontext->support_surrounding_text) {
             flags |= CAPACITY_SURROUNDING_TEXT;
         }
+        if (fcitxcontext->is_wayland) {
+            flags |= CAPACITY_RELATIVE_CURSOR_RECT;
+        }
 
         // always run this code against all gtk version
         // seems visibility != PASSWORD hint
@@ -1044,6 +1160,10 @@ fcitx_im_context_reset(GtkIMContext *context)
 
     if (fcitx_client_is_valid(fcitxcontext->client)) {
         fcitx_client_reset(fcitxcontext->client);
+    }
+
+    if (fcitxcontext->xkbComposeState) {
+        xkb_compose_state_reset(fcitxcontext->xkbComposeState);
     }
 
     gtk_im_context_reset(fcitxcontext->slave);
@@ -1432,7 +1552,7 @@ _request_surrounding_text (FcitxIMContext **context)
         /* some unref can happen here */
         g_signal_emit (*context, _signal_retrieve_surrounding_id, 0,
                        &return_value);
-        if (context)
+        if (*context)
             g_object_remove_weak_pointer ((GObject *) *context,
                                           (gpointer *) context);
         else

@@ -298,7 +298,7 @@ void FcitxInstanceLoadIM(FcitxInstance* instance, FcitxAddon* addon)
             return;
         }
         fclose(fp);
-        handle = dlopen(modulePath, RTLD_NOW | (addon->loadLocal ? RTLD_LOCAL : RTLD_GLOBAL));
+        handle = dlopen(modulePath, RTLD_NOW | RTLD_NODELETE | (addon->loadLocal ? RTLD_LOCAL : RTLD_GLOBAL));
         if (!handle) {
             FcitxLog(ERROR, _("IM: open %s fail %s") , modulePath , dlerror());
             free(modulePath);
@@ -457,6 +457,7 @@ void FcitxInstanceRegisterIMv2(FcitxInstance *instance,
     entry->UpdateSurroundingText = iface.UpdateSurroundingText;
     entry->DoReleaseInput = iface.DoReleaseInput;
     entry->OnClose = iface.OnClose;
+    entry->GetSubModeName = iface.GetSubModeName;
     entry->klass = imclass;
     entry->iPriority = priority;
     if (langCode)
@@ -580,7 +581,7 @@ INPUT_RETURN_VALUE _DoTrigger(FcitxInstance* instance)
 {
     if (FcitxInstanceGetCurrentState(instance) == IS_INACTIVE) {
         FcitxInstanceChangeIMState(instance, instance->CurrentIC);
-        FcitxInstanceShowInputSpeed(instance);
+        FcitxInstanceShowInputSpeed(instance, false);
     } else {
         FcitxInstanceCloseIM(instance, instance->CurrentIC);
     }
@@ -641,7 +642,7 @@ INPUT_RETURN_VALUE _DoSwitch(FcitxInstance* instance)
         }
     }
     FcitxInstanceChangeIMStateWithKey(instance, instance->CurrentIC, true);
-    FcitxInstanceShowInputSpeed(instance);
+    FcitxInstanceShowInputSpeed(instance, false);
 
     return retVal;
 }
@@ -1053,6 +1054,18 @@ void FcitxInstanceSwitchIMByName(FcitxInstance* instance, const char* name)
     FcitxIM* im = FcitxInstanceGetIMFromIMList(instance, IMAS_Enable, name);
     if (im) {
         if (FcitxInstanceGetCurrentIC(instance)) {
+            // Ignore the request if current IM is already same with the name
+            // Add such check here is mainly for GitHub Issue #203.
+            // Another possibility is to add it to FcitxInstanceSwitchIMInternal,
+            // but that part of code is too hack and some initialization may
+            // relies on it.
+            // This function is only used in UI and DBus remote control,
+            // Thus it is safe to change it here.
+            FcitxIM* currentIM = FcitxInstanceGetCurrentIM(instance);
+            if (currentIM && strcmp(currentIM->strName, name) == 0) {
+                return;
+            }
+
             int idx = FcitxInstanceGetIMIndexByName(instance, name);
             if (idx < 0)
                 return;
@@ -1098,7 +1111,7 @@ void FcitxInstanceSwitchIMByIndex(FcitxInstance* instance, int index)
         if (ic)
             FcitxInstanceSetLocalIMName(instance, ic, NULL);
         FcitxInstanceSwitchIMInternal(instance, index, true, true, true);
-        FcitxInstanceShowInputSpeed(instance);
+        FcitxInstanceShowInputSpeed(instance, false);
 
         if (FcitxInstanceGetCurrentState(instance) != IS_ACTIVE) {
             FcitxInstanceEnableIM(instance, FcitxInstanceGetCurrentIC(instance), false);
@@ -1461,7 +1474,7 @@ boolean FcitxInstanceUpdateCurrentIM(FcitxInstance* instance, boolean force, boo
     boolean forceSwtich = force;
     boolean updateGlobal = false;
     /* global index is not valid, that's why we need to fix it. */
-    if (globalIndex == 0) {
+    if (globalIndex <= 0) {
         UT_array *ime = &instance->imes;
         FcitxIM *im = (FcitxIM*)utarray_eltptr(ime, 1);
         if (im) {
@@ -1727,18 +1740,20 @@ void HideInputSpeed(void* arg)
     FcitxUICloseInputWindow(instance);
 }
 
-void FcitxInstanceShowInputSpeed(FcitxInstance* instance)
+void FcitxInstanceShowInputSpeed(FcitxInstance* instance, boolean force)
 {
     FcitxInputState* input = instance->input;
 
     if (!instance->initialized)
         return;
 
-    if (!instance->config->bShowInputWindowTriggering)
-        return;
+    if (!force) {
+        if (!instance->config->bShowInputWindowTriggering)
+            return;
 
-    if (FcitxInstanceGetCurrentState(instance) != IS_ACTIVE && instance->config->bShowInputWindowOnlyWhenActive)
-        return;
+        if (FcitxInstanceGetCurrentState(instance) != IS_ACTIVE && instance->config->bShowInputWindowOnlyWhenActive)
+            return;
+    }
 
     if (FcitxMessagesGetMessageCount(input->msgAuxUp)
         || FcitxMessagesGetMessageCount(input->msgAuxDown)
@@ -1762,6 +1777,11 @@ void FcitxInstanceShowInputSpeed(FcitxInstance* instance)
     if (im) {
         FcitxMessagesAddMessageStringsAtLast(input->msgAuxUp, MSG_TIPS,
                                              im->strName);
+        const char* subModeName = im->GetSubModeName ? im->GetSubModeName(im->klass) : NULL;
+        if (subModeName) {
+            FcitxMessagesAddMessageStringsAtLast(input->msgAuxUp, MSG_TIPS, " - ",
+                                                 subModeName);
+        }
     }
 
     //显示打字速度
@@ -2071,5 +2091,10 @@ INPUT_RETURN_VALUE FcitxStandardKeyBlocker(FcitxInputState* input, FcitxKeySym k
         return IRV_TO_PROCESS;
 }
 
+FCITX_EXPORT_API
+void FcitxInstanceShowCurrentIMInfo(FcitxInstance* instance)
+{
+    FcitxInstanceShowInputSpeed(instance, true);
+}
 
 // kate: indent-mode cstyle; space-indent on; indent-width 0;
